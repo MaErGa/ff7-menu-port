@@ -10,6 +10,11 @@ import playSound from "../../util/sounds.ts";
 import { useContext } from "../../context/context.tsx";
 import { markKeyboardNavigation } from "../../hooks/useCursorNav.ts";
 import { landingNav } from "../../hooks/landingNav.ts";
+import useBlink from "../../hooks/useBlink.ts";
+import { FACING_FRONT } from "../../hooks/useLookDirection.ts";
+
+/** How long the portrait holds front-and-centre with its eyes open after a revive */
+const WAKE_MS = 600;
 import styles from "./PartyMember.module.scss";
 import ContentBox from "../ContentBox/ContentBox.tsx";
 import Portrait from "../Portrait/Portrait.tsx";
@@ -34,11 +39,19 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
     const limitCharge = useSyncExternalStore(limitGauge.subscribe, limitGauge.getCharge);
     const [limitDraining, setLimitDraining] = useState(false);
     const limitRunningRef = useRef(false);
+    // Mirrors limitRunningRef for rendering. The ref guards re-entry from event
+    // handlers and cannot drive the portrait, since writing it repaints nothing.
+    const [limitActive, setLimitActive] = useState(false);
     const limitTimersRef = useRef<number[]>([]);
     const { isSoundEnabled, currentHealth, currentMana, userName, dispatch } = useContext();
     const navigate = useNavigate();
     const landingFocus = useSyncExternalStore(landingNav.subscribe, landingNav.getFocus);
     const keyboardFocus = healthReduction ? landingFocus : null;
+    // Blinks on its own every so often, and on every hit that lands
+    const [blinking, blinkNow] = useBlink();
+    // The beat after a revive: eyes open, facing front, before the mouse has him back
+    const [waking, setWaking] = useState(false);
+    const wakeTimerRef = useRef(0);
     const attackRef = useRef<() => void>(() => { });
     const reviveRef = useRef<() => void>(() => { });
 
@@ -51,6 +64,7 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
     useEffect(() => () => {
         limitTimersRef.current.forEach(clearTimeout);
         limitTimersRef.current = [];
+        window.clearTimeout(wakeTimerRef.current);
     }, []);
 
     // Expose the avatar interactions to the landing page keyboard cursor
@@ -145,6 +159,7 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
 
         const sound = (damage * multiplier > 200) ? "crit" : "slash";
         playSound(sound, isSoundEnabled);
+        blinkNow();
     }
 
     /**
@@ -160,6 +175,7 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
         }
 
         limitRunningRef.current = true;
+        setLimitActive(true);
         limitGauge.spend();
         setLimitDraining(true);
         setLimitHits(0);
@@ -178,6 +194,7 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
             // bar — it just stops dealing damage rather than cutting away mid-swing
             setLimitHits(index + 1);
             playSound(critical ? "crit" : "slash", isSoundEnabled);
+            blinkNow();
 
             if (!health) return;
 
@@ -206,6 +223,7 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
         after(LIMIT_TIMING.drain, () => setLimitDraining(false));
         after(lastHitAt + LIMIT_TIMING.beforeSpin + LIMIT_TIMING.spin, () => {
             limitRunningRef.current = false;
+            setLimitActive(false);
             limitTimersRef.current = [];
         });
     };
@@ -227,6 +245,13 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
             playSound("heal", isSoundEnabled);
             dispatch({ type: "SET_CURRENT_HEALTH", payload: partyMemberData!.hp });
             dispatch({ type: "SET_CURRENT_MANA", payload: Math.max(0, currentMana - 34) });
+
+            // Opens his eyes where the closed frame was, and holds there a beat
+            // before the mouse takes over -- coming round, rather than snapping
+            // straight to whichever way the pointer happens to be sitting.
+            window.clearTimeout(wakeTimerRef.current);
+            setWaking(true);
+            wakeTimerRef.current = window.setTimeout(() => setWaking(false), WAKE_MS);
         } else {
             playSound("error", isSoundEnabled);
         }
@@ -234,6 +259,27 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
 
     attackRef.current = handleOnClick;
     reviveRef.current = handleHealClick;
+
+    /**
+     * What the portrait is doing, in precedence order.
+     *
+     * Dead outranks everything: eyes shut and facing front, no mouse tracking,
+     * until he is revived. (A limit break cannot start from 0 HP anyway --
+     * runLimitBreak refuses it.)
+     *
+     * The limit break holds him facing front for the length of the cut. Not for
+     * want of a blink frame -- every pose has one now -- but because the gauge
+     * is off to the side, so he is always looking that way when it is clicked,
+     * and the cut reads as far less of an event delivered in profile.
+     *
+     * Waking is the beat after a revive: the eyes open where the closed frame
+     * was and stay front for a moment before the mouse has him back.
+     */
+    const isDead = healthReduction && currentHealth === 0;
+    const portraitLook = isDead || limitActive || waking ? FACING_FRONT : null;
+    // Waking suppresses the idle blink too: the point of the beat is the eyes
+    // being open, so it must not open them and shut them again.
+    const portraitBlink = isDead || (blinking && !waking);
 
     let content;
 
@@ -243,10 +289,10 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
 
         content = (
             <div className={`flex justify-between`}>
-                <div className={styles.portrait} data-shake={isAttacking} data-dying={isDying} data-interactive={healthReduction} data-health={currentHealth?.toString()} data-focused={keyboardFocus === "avatar"}>
+                <div className={styles.portrait} data-look-target="avatar" data-shake={isAttacking} data-dying={isDying} data-interactive={healthReduction} data-health={currentHealth?.toString()} data-focused={keyboardFocus === "avatar"}>
                     {isAttacking && <p className="absolute">{textToSprite(damage.toString(), true)}</p>}
                     <div className="self-center relative" onClick={handleOnClick} onMouseEnter={handleMouseEnter}>
-                        <Portrait src={image_path} width={145} />
+                        <Portrait src={image_path} width={145} look={portraitLook} blink={portraitBlink} />
                         {limitHits > 0 && (
                             <div
                                 className={styles.limitSlashes}
@@ -280,7 +326,7 @@ const PartyMember: React.FC<partyMemberProps> = ({ memberId, showProgressBars = 
                             </div>
                         )}
                     </div>
-                    {healthReduction && currentHealth === 0 && <div onClick={handleHealClick} onMouseEnter={() => landingNav.actions.focusTarget?.("revive")} className="absolute top-full"><ContentBox data-label="healButton" data-focused={keyboardFocus === "revive"}>{textToSprite("Revive", false, (!currentMana || currentMana < 34) ? "grey" : "")}</ContentBox></div>}
+                    {healthReduction && currentHealth === 0 && <div onClick={handleHealClick} onMouseEnter={() => landingNav.actions.focusTarget?.("revive")} className={styles.reviveButton} data-look-target="revive"><ContentBox data-label="healButton" data-focused={keyboardFocus === "revive"}>{textToSprite("Revive", false, (!currentMana || currentMana < 34) ? "grey" : "")}</ContentBox></div>}
                 </div>
                 <div className="mt-2 ml-8">
                     {healthReduction ? (

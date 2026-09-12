@@ -10,6 +10,7 @@ import Equip from "./pages/Equip/Equip";
 import MemCardSelector from "./components/MemCardSelector/MemCardSelector";
 import Config from "./pages/Config/Config";
 import Resume from "./pages/Resume/Resume";
+import Contact from "./pages/Contact/Contact";
 import NameEntry from "./pages/NameEntry/NameEntry";
 
 /**
@@ -59,29 +60,86 @@ function App() {
   }, []);
 
   useEffect(() => {
+    /**
+     * How much of the screen the app actually has, which is not the same as how
+     * tall the window is once a soft keyboard is up.
+     *
+     * The layout viewport does not shrink for a keyboard — on iOS
+     * documentElement.clientHeight is identical with the keyboard open and
+     * closed — so scaling against it left the app the same size with a third of
+     * it underneath the keyboard. The browser then panned to bring the focused
+     * field into view, which is what cropped the top.
+     *
+     * The visual viewport is the one that shrinks, so it is the right measure.
+     * It also shrinks under pinch zoom, where the layout viewport is the stable
+     * reference and the app must NOT resize — hence the scale check.
+     */
+    function availableHeight() {
+      const viewport = window.visualViewport;
+      if (viewport && Math.abs(viewport.scale - 1) < 0.01) return viewport.height;
+      return document.documentElement.clientHeight;
+    }
+
     function scaleApp() {
+
       const app = document.getElementById("root");
       if (app) {
         // The layout viewport stays stable while pinch-zooming, unlike innerWidth/innerHeight
         const viewportWidth = document.documentElement.clientWidth;
-        const viewportHeight = document.documentElement.clientHeight;
-        const scale = Math.min(
-          viewportWidth / DESIGN_WIDTH,
-          viewportHeight / canvasHeight(viewportWidth, viewportHeight)
-        );
+        const viewportHeight = availableHeight();
+
         /**
-         * Centres the element's own box, measured rather than assumed, and is
-         * allowed to go negative so a box taller than the window overhangs
-         * evenly instead of hanging off the bottom. offsetHeight is layout
-         * pixels, so the transform does not feed back into it.
+         * Which canvas applies is decided from the *layout* viewport, but the
+         * fit is measured against the visual one.
          *
-         * This used to centre the design canvas and clamp at 0, which is the
-         * same answer whenever the canvas and the box are the same height —
-         * every case before the compact canvas existed.
+         * canvasHeight asks whether this is a phone by looking at the shorter
+         * side. Handing it the visual height would make a keyboard the answer:
+         * on a tablet or a small window the band drops under 500px while the
+         * keyboard is up, the compact canvas kicks in, and the whole app
+         * changes size mid-sentence. The device does not stop being a tablet
+         * because someone is typing.
          */
-        const offsetY = (viewportHeight - app.offsetHeight * scale) / 2;
-        app.style.transform = `translateY(${offsetY}px) scale(${scale})`;
+        const canvas = canvasHeight(viewportWidth, document.documentElement.clientHeight);
+        const scale = Math.min(viewportWidth / DESIGN_WIDTH, viewportHeight / canvas);
+        /**
+         * offsetTop is where the visible band starts. It is 0 for a keyboard
+         * docked at the bottom, but not once the browser has panned the visual
+         * viewport, and without it the app would be centred on a band that has
+         * moved out from under it.
+         *
+         * The centring itself is measured from the element's own box rather
+         * than assumed from the canvas, and is allowed to go negative so a box
+         * taller than the window overhangs evenly instead of hanging off the
+         * bottom. offsetHeight is layout pixels, so the transform does not feed
+         * back into it.
+         *
+         * Deliberately NOT adding window.scrollY. It was, briefly, and it made
+         * things worse: translateY moves the app in document space, so shifting
+         * it down by the scroll moves the focused field down too, the browser
+         * scrolls further to chase it, and the two push each other until the
+         * keyboard is covering the bottom. #root is position:fixed instead, so
+         * the document has nothing to scroll and there is no scroll to correct
+         * for. html's own `overflow: hidden` stops a stray swipe; being out of
+         * flow is what stops the browser scrolling to a focused field.
+         */
+        const bandTop = window.visualViewport?.offsetTop ?? 0;
+        const offsetY = bandTop + (viewportHeight - app.offsetHeight * scale) / 2;
+        // translateX(-50%) pairs with left: 50% in index.css — see the note there
+        app.style.transform = `translateX(-50%) translateY(${offsetY}px) scale(${scale})`;
       }
+    }
+
+    /**
+     * The keyboard animates, and the resize can land while it is still moving —
+     * so re-measure once it has settled as well. Closing it is the case that
+     * needs this most: without the second pass the app can be left centred on
+     * the band the keyboard was occupying.
+     */
+    let settle: ReturnType<typeof setTimeout>;
+    function scaleAfterKeyboard() {
+      scaleApp();
+      clearTimeout(settle);
+      settle = setTimeout(scaleApp, 300);
     }
 
     // iOS ignores user-scalable=no, so block pinch zoom; the app scales itself anyway
@@ -92,7 +150,12 @@ function App() {
 
     window.addEventListener("load", scaleApp);
     window.addEventListener("resize", scaleApp);
+    // Focus moving in and out of a field is what raises and drops the keyboard
+    window.addEventListener("focusin", scaleAfterKeyboard);
+    window.addEventListener("focusout", scaleAfterKeyboard);
     window.addEventListener("orientationchange", scaleApp);
+    // Still worth listening: if anything does manage to scroll, re-place the app
+    window.addEventListener("scroll", scaleApp, { passive: true });
     window.visualViewport?.addEventListener("resize", scaleApp);
     window.visualViewport?.addEventListener("scroll", scaleApp);
     document.addEventListener("gesturestart", preventGesture);
@@ -102,9 +165,13 @@ function App() {
     scaleApp();
 
     return () => {
+      clearTimeout(settle);
       window.removeEventListener("load", scaleApp);
       window.removeEventListener("resize", scaleApp);
+      window.removeEventListener("focusin", scaleAfterKeyboard);
+      window.removeEventListener("focusout", scaleAfterKeyboard);
       window.removeEventListener("orientationchange", scaleApp);
+      window.removeEventListener("scroll", scaleApp);
       window.visualViewport?.removeEventListener("resize", scaleApp);
       window.visualViewport?.removeEventListener("scroll", scaleApp);
       document.removeEventListener("gesturestart", preventGesture);
@@ -121,10 +188,13 @@ function App() {
             <Route path="/" element={<Landing />} />
             <Route path="/skills" element={<Skills />} />
             <Route path="/equip" element={<Equip />} />
-            <Route path="/projects" element={<Projects />} />
-            <Route path="/history" element={<MemCardSelector />} />
+            {/* The tabs are addressable: /projects/websites, /contact/guestbook.
+                Optional, so /projects and /contact still open the first tab. */}
+            <Route path="/projects/:projectsTab?" element={<Projects />} />
+            <Route path="/history/:historyType?" element={<MemCardSelector />} />
             <Route path="/config" element={<Config />} />
             <Route path="/resume" element={<Resume />} />
+            <Route path="/contact/:contactTab?" element={<Contact />} />
             <Route path="/name" element={<NameEntry />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

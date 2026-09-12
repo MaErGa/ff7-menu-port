@@ -1,0 +1,225 @@
+// A sprite-font text field: transparent real control on top, painted glyphs
+// underneath. See SpriteInput.tsx for why it is built this way.
+
+.field {
+    // A glyph is 39px tall, so a shorter row clips the descenders on g, y and p.
+    // This was 34px and cut the bottom off every line.
+    --sprite-line: 42px;
+    position: relative;
+    // The recessed look the progress bar's track uses, so a field reads as
+    // something you type into rather than another panel
+    background: rgba(0, 0, 0, 0.35);
+    box-shadow: inset 0 2px 3px 2px rgba(0, 0, 0, 0.45);
+    // The same frame the content boxes use, at the same width — 9/24px/5px is
+    // exactly what .contentBox draws, so a field and a panel read as the same
+    // piece of furniture rather than two different weights of frame.
+    //
+    // border-image-width does not affect layout (border-width stays 2px), so
+    // the frame is painted 24px inward over the padding. The padding is raised
+    // to match, or the frame closes over the text.
+    border: 2px solid #78797a;
+    border-image: url("/border.png") 9/24px/5px;
+    // Raised from 0.35rem/0.7rem with the frame. border-image-width does not
+    // affect layout, so the heavier art is painted inward over the padding and
+    // the old inset left the text all but touching it. This is the least that
+    // clears it: the row grows 57px to 64px, where matching the panels' padding
+    // outright would have taken it to 75px for no gain.
+    padding: 0.55rem 1.1rem;
+    min-height: var(--sprite-line);
+
+    /**
+     * No outline for focus, selection or invalidity. The frame is now the
+     * panels' own weight, and a bright line drawn just inside it read as
+     * flicker as the cursor moved down the form.
+     *
+     * The blinking caret says where the keyboard is. A failed submission says
+     * what is wrong in words, beside Send, which is more use than a red edge
+     * that does not say which of the two email rules was broken.
+     */
+}
+
+/**
+ * Stands in for a label beside the box. Positioned rather than in flow so it
+ * cannot push the text window around, and inset by .field's own padding so it
+ * begins on the same column the first typed character will.
+ */
+.placeholder {
+    position: absolute;
+    top: 0.55rem;
+    left: 1.1rem;
+    display: flex;
+    align-items: center;
+    min-height: var(--sprite-line);
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+// A fixed window over the painted text. The glyphs are nowrap spans, so without
+// clipping a long value runs straight out of the field and over its neighbour.
+.text {
+    position: relative;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+/**
+ * A multiline field scrolls for real rather than by transform, because
+ * Scrollbar measures scrollTop and scrollHeight on its target. Its native bar
+ * is hidden by the global .hide-scrollbar class the component adds.
+ *
+ * The gutter is reserved whether or not the bar is showing. Reclaiming it the
+ * way the Skills list does would change the wrap width as the bar appears,
+ * which can add a line, which keeps the bar — a loop that settles somewhere
+ * arbitrary. A fixed gutter costs 34px of a 762px field and cannot oscillate.
+ */
+.field[data-multiline="true"] .text {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 34px;
+}
+
+// Shifted by SpriteInput to keep the caret inside .text
+.track {
+    position: relative;
+}
+
+.line {
+    display: flex;
+    align-items: center;
+    min-height: var(--sprite-line);
+    white-space: nowrap;
+}
+
+// Keeps an empty wrapped line at full height so the box does not jump as the
+// message is typed
+.blank {
+    display: block;
+    height: var(--sprite-line);
+}
+
+/**
+ * The glyph itself comes from .font-glyph and data-sprite; this only blinks it
+ * and lines it up. No width, height or background — setting any of them would
+ * override the spritesheet the glyph is drawn from.
+ *
+ * The 1.5px is not a fudge. The caret is a direct child of .line, but the text
+ * beside it is wrapped by textToSprite in a `.font` span that is 36px tall
+ * while its glyphs are 39px. .line centres on the cross axis, so that wrapper
+ * is centred and its glyphs overflow it evenly — putting the text 1.5px lower
+ * than a bare glyph sitting directly in the row. This puts the caret back on
+ * the same baseline.
+ */
+/**
+ * The selected run, drawn behind the glyphs.
+ *
+ * ::selection cannot do this: it highlights the real control's text, which is
+ * transparent, a different width, and in a different place — so a native
+ * highlight lands over nothing you can see. FF7 marks a selection by inverting
+ * the panel behind it, which is what this approximates.
+ */
+.selected {
+    display: inline-flex;
+    background: rgba(150, 190, 255, 0.32);
+    border-radius: 2px;
+}
+
+.caret {
+    position: relative;
+    top: 2.75px;
+    /*
+     * The caret must not take space. It is a real inline glyph, so its 7px
+     * pushed every character after it along — typing in the middle of a word
+     * shunted the rest of the line sideways, and a click to the right of the
+     * caret landed one character out because the painted text no longer
+     * matched the widths the hit testing sums.
+     *
+     * All of that width comes off the *right*, not split either side. The ink
+     * fills the glyph's box, so splitting it made the caret straddle the gap
+     * and clip the character behind it as well as the one ahead. Taking it all
+     * from the right stands the caret's left edge exactly on the boundary: it
+     * overlaps only the character it is in front of, and never the one just
+     * typed, which is the one you are looking at.
+     *
+     * -7px is the glyph's own width (font.css, [data-sprite="I"]). Net
+     * contribution stays zero, so nothing shifts.
+     */
+    margin-left: 0;
+    margin-right: -7px;
+
+    /*
+     * Slightly taller than the capitals it sits beside, which is what makes a
+     * caret read as a caret rather than as a letter someone typed.
+     *
+     * The origin is the *ink's* baseline, not the box's bottom edge. Measured
+     * off the spritesheet: within the glyph's 39px box the bar runs from 3.0 to
+     * 34.33 — the same cap height as I, T and H. Scaling about 34.33px leaves
+     * the bottom exactly where it was and grows the top by about 4.7px.
+     * Scaling about the box instead would have lifted the whole bar.
+     */
+    transform: scaleY(1.15);
+    transform-origin: 50% 34.33px;
+    // Matches the blink on the rest of the menu's prompts
+    animation: spriteCaret 1s steps(1, end) infinite;
+}
+
+@keyframes spriteCaret {
+
+    0%,
+    50% {
+        opacity: 1;
+    }
+
+    50.01%,
+    100% {
+        opacity: 0;
+    }
+}
+
+// The real control. Transparent rather than hidden: a display:none or
+// visibility:hidden field cannot be focused or typed into, and moving it off
+// screen makes the mobile keyboard scroll the page chasing it.
+.input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: inherit;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: transparent;
+    /*
+     * Stronger than `color` and the thing WebKit actually honours when it
+     * paints a selection. Without it the text reappears the moment it is
+     * selected, however transparent `color` claims to be.
+     */
+    -webkit-text-fill-color: transparent;
+    caret-color: transparent;
+    resize: none;
+    outline: none;
+    // Below 16px iOS zooms the page on focus, which fights the app's own scaling
+    font-size: 16px;
+    font-family: inherit;
+
+    /*
+     * The native highlight has to be painted *out*, not merely left unstyled.
+     * The real text is transparent and about half the width of what is drawn,
+     * so the browser's own selection lands over the wrong characters — with no
+     * rule at all the UA default shows through and you see two highlights in
+     * two different places. .selected draws the real one on the glyphs.
+     */
+    /*
+     * NOT grouped with ::-moz-selection. One invalid selector invalidates the
+     * whole list, and Chromium does not know the prefixed one — so pairing them
+     * threw the rule away entirely and the native highlight kept painting.
+     * Firefox has supported the standard form since 62.
+     */
+    &::selection {
+        background: transparent;
+        // The colour matters as much as the background. A browser paints
+        // selected text in its own foreground colour, which overrides
+        // `color: transparent` above — so selecting made the hidden text
+        // *appear*, in a 16px system font at half the width of the sprites.
+        color: transparent;
+    }
+}
